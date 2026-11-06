@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="TuningConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://Scripts/Config/TuningConfig.cs" id="1_tuning"]
+
+[resource]
+script = ExtResource("1_tuning")
+WalkSpeed = 95.0
+Gravity = 925.71
+MaxFallSpeed = 600.0
+MaxChargeTime = 0.6
+MinJumpSpeed = 145.0
+MaxJumpSpeed = 524.57
+HorizontalJumpSpeed = 210.0
+LandingRecoveryTime = 0.05
+PlayerMass = 1.0
+WallRestitution = 0.72
+CeilingRestitution = 0.45
+PlayerRestitution = 0.88
+GroundFriction = 0.85
+MinWallBounceSpeed = 65.0
+FacingVelocityEpsilon = 8.0
+SinglePlayerCameraScrollSpeed = 16.0
+PvPCameraSmoothSpeed = 8.0
+RespawnSafeMarginBottom = 48.0
+InitialLives = 3
+GoalHoldTimeSeconds = 5.0
+QuickMatchDurationSeconds = 180.0
+KineticNullifierDuration = 8.0
+KineticNullifierRespawnDelay = 6.0
+DirectionLockDuration = 10.0

@@ -1,0 +1,9 @@
+# Godot 4+ C# specific ignores
+.godot/
+.mono/
+data_*/
+mono_crash.*.json
+bin/
+obj/
+*.tmp
+.DS_Store

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://c8bouncebashmain"]
+
+[ext_resource type="Script" path="res://Scripts/Core/RoundManager.cs" id="1_roundmgr"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_roundmgr")
