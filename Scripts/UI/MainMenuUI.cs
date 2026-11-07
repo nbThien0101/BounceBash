@@ -6,8 +6,9 @@ using Godot;
 namespace BounceBash.UI;
 
 /// <summary>
-/// Full Menu Navigation UI matching GDD Section 1.6.3 Wireframes (Figures 1.6-02 to 1.6-06):
+/// Full Menu Navigation UI matching GDD v0.9.5 Section 1.6.3 (Slide 19):
 /// - 01 / MENU CHÍNH (Một Người, Nhiều Người, Thử 2 Người Local, Cài Đặt)
+/// - 01.1 / CHẾ ĐỘ MỘT NGƯỜI (Solo Tự Leo vs PvE Đấu Bot)
 /// - 02 / NHIỀU NGƯỜI (Tạo Phòng, Vào Phòng, Quay Lại)
 /// - 03 / PHÒNG LAN (P1-P4 Lobby slots, Character Male/Female toggle, Map Combination, IP/Port info, Bắt Đầu)
 /// - 04 / VÀO PHÒNG (LAN IP input + Optional Port dialog)
@@ -16,11 +17,13 @@ namespace BounceBash.UI;
 public partial class MainMenuUI : CanvasLayer
 {
     public event Action? StartSinglePlayerRequested;
+    public event Action? StartPvEBotRequested;
     public event Action? StartLocalTwoPlayerRequested;
     public event Action? HostStartLanMatchRequested;
 
     private Control _root = null!;
     private Control _panelMain = null!;
+    private Control _panelSinglePlayerSubmenu = null!;
     private Control _panelMultiplayerChoice = null!;
     private Control _panelLanLobby = null!;
     private Control _panelJoinDialog = null!;
@@ -44,6 +47,7 @@ public partial class MainMenuUI : CanvasLayer
         if (NetworkManager.Instance != null)
         {
             NetworkManager.Instance.LobbyUpdated += RefreshLobbyUi;
+            NetworkManager.Instance.HostResetOccurred += OnHostResetOccurred;
         }
     }
 
@@ -52,12 +56,30 @@ public partial class MainMenuUI : CanvasLayer
         if (NetworkManager.Instance != null)
         {
             NetworkManager.Instance.LobbyUpdated -= RefreshLobbyUi;
+            NetworkManager.Instance.HostResetOccurred -= OnHostResetOccurred;
         }
+    }
+
+    private void OnHostResetOccurred()
+    {
+        ShowScreen(_panelMultiplayerChoice);
+    }
+
+    public void ShowLanLobbyDirectly()
+    {
+        ShowScreen(_panelLanLobby);
+        RefreshLobbyUi();
+    }
+
+    public void ShowMainMenuDirectly()
+    {
+        ShowScreen(_panelMain);
     }
 
     private void ShowScreen(Control targetPanel)
     {
         _panelMain.Visible = targetPanel == _panelMain;
+        _panelSinglePlayerSubmenu.Visible = targetPanel == _panelSinglePlayerSubmenu;
         _panelMultiplayerChoice.Visible = targetPanel == _panelMultiplayerChoice;
         _panelLanLobby.Visible = targetPanel == _panelLanLobby;
         _panelJoinDialog.Visible = targetPanel == _panelJoinDialog;
@@ -118,7 +140,7 @@ public partial class MainMenuUI : CanvasLayer
 
         var subTitleLbl = new Label
         {
-            Text = "THE ADVENTURE TO THE FORBIDDEN TEMPLE  |  GODOT 4 C#",
+            Text = "THE ADVENTURE TO THE FORBIDDEN TEMPLE  |  GDD v0.9.5 GODOT 4 C#",
             Position = new Vector2(42f, 66f),
             Modulate = new Color("8ecae6")
         };
@@ -126,12 +148,14 @@ public partial class MainMenuUI : CanvasLayer
         _root.AddChild(subTitleLbl);
 
         _panelMain = BuildMainPanel();
+        _panelSinglePlayerSubmenu = BuildSinglePlayerSubmenuPanel();
         _panelMultiplayerChoice = BuildMultiplayerChoicePanel();
         _panelLanLobby = BuildLanLobbyPanel();
         _panelJoinDialog = BuildJoinDialogPanel();
         _panelSettings = BuildSettingsPanel();
 
         _root.AddChild(_panelMain);
+        _root.AddChild(_panelSinglePlayerSubmenu);
         _root.AddChild(_panelMultiplayerChoice);
         _root.AddChild(_panelLanLobby);
         _root.AddChild(_panelJoinDialog);
@@ -143,8 +167,8 @@ public partial class MainMenuUI : CanvasLayer
         var panel = new Control { AnchorsPreset = (int)Control.LayoutPreset.FullRect };
         AddBadge(panel, "01 / MENU CHÍNH");
 
-        var btnSingle = CreateMenuButton(panel, "MỘT NGƯỜI  (Vượt đền một mình - Auto-scroll)", new Vector2(42f, 102f), new Vector2(310f, 38f), true);
-        btnSingle.Pressed += () => StartSinglePlayerRequested?.Invoke();
+        var btnSingle = CreateMenuButton(panel, "MỘT NGƯỜI  (Solo tự leo hoặc PvE đấu Bot)", new Vector2(42f, 102f), new Vector2(310f, 38f), true);
+        btnSingle.Pressed += () => ShowScreen(_panelSinglePlayerSubmenu);
 
         var btnMulti = CreateMenuButton(panel, "NHIỀU NGƯỜI  (Chơi qua mạng nội bộ LAN 2-4 máy)", new Vector2(42f, 148f), new Vector2(310f, 38f), false);
         btnMulti.Pressed += () => ShowScreen(_panelMultiplayerChoice);
@@ -157,12 +181,39 @@ public partial class MainMenuUI : CanvasLayer
 
         var hint = new Label
         {
-            Text = "Điều khiển: A/D di chuyển | Giữ SPACE/W tích lực + A/D chọn hướng -> Nhả để nhảy",
+            Text = "Điều khiển: A/D di chuyển | Giữ SPACE/W tích lực tuần hoàn Min↔Max -> Nhả để nhảy",
             Position = new Vector2(42f, 325f),
             Modulate = new Color("adb5bd")
         };
         hint.AddThemeFontSizeOverride("font_size", 9);
         panel.AddChild(hint);
+
+        return panel;
+    }
+
+    private Control BuildSinglePlayerSubmenuPanel()
+    {
+        var panel = new Control { AnchorsPreset = (int)Control.LayoutPreset.FullRect };
+        AddBadge(panel, "01.1 / CHỌN CHẾ ĐỘ MỘT NGƯỜI (GDD v0.9.5)");
+
+        var btnSolo = CreateMenuButton(
+            panel,
+            "SOLO — TỰ LEO  (Tự leo qua 3 sector, camera tự cuộn, chạm lọ thuốc)",
+            new Vector2(42f, 110f),
+            new Vector2(360f, 44f),
+            true);
+        btnSolo.Pressed += () => StartSinglePlayerRequested?.Invoke();
+
+        var btnPvE = CreateMenuButton(
+            panel,
+            "PVE — ĐẤU BOT  (1 người đấu 1 bot AI, camera chung, tranh GoalZone)",
+            new Vector2(42f, 168f),
+            new Vector2(360f, 44f),
+            false);
+        btnPvE.Pressed += () => StartPvEBotRequested?.Invoke();
+
+        var btnBack = CreateMenuButton(panel, "← QUAY LẠI MENU CHÍNH", new Vector2(42f, 250f), new Vector2(200f, 32f), false);
+        btnBack.Pressed += () => ShowScreen(_panelMain);
 
         return panel;
     }
@@ -175,12 +226,20 @@ public partial class MainMenuUI : CanvasLayer
         var btnHost = CreateMenuButton(panel, "TẠO PHÒNG  (Trở thành chủ phòng LAN - Chiếm P1)", new Vector2(42f, 120f), new Vector2(310f, 44f), true);
         btnHost.Pressed += () =>
         {
-            NetworkManager.Instance.HostLanRoom(NetworkManager.DefaultLanPort);
+            NetworkManager.Instance.HostLanRoom(NetworkManager.Instance.ConfiguredPort);
             ShowScreen(_panelLanLobby);
         };
 
         var btnJoin = CreateMenuButton(panel, "VÀO PHÒNG  (Kết nối địa chỉ IP mạng nội bộ)", new Vector2(42f, 178f), new Vector2(310f, 44f), false);
-        btnJoin.Pressed += () => ShowScreen(_panelJoinDialog);
+        btnJoin.Pressed += () =>
+        {
+            if (_ipInput != null)
+            {
+                _ipInput.Text = "";
+                _ipInput.PlaceholderText = "Format: 100.xxx.xxx.xxx (VD: 100.117.237.74)";
+            }
+            ShowScreen(_panelJoinDialog);
+        };
 
         var btnBack = CreateMenuButton(panel, "← QUAY LẠI MENU CHÍNH", new Vector2(42f, 260f), new Vector2(200f, 32f), false);
         btnBack.Pressed += () => ShowScreen(_panelMain);
@@ -222,29 +281,33 @@ public partial class MainMenuUI : CanvasLayer
 
             var slotLbl = new Label
             {
-                Text = i == 0 ? "CHỦ PHÒNG (Nam)" : "CHỜ NGƯỜI CHƠI...",
-                Position = new Vector2(84f, 103f + i * 38f),
-                Modulate = new Color("e9ecef")
+                Text = "CHỜ NGƯỜI CHƠI...",
+                Position = new Vector2(82f, 103f + i * 38f),
+                Modulate = new Color("f8f9fa")
             };
-            slotLbl.AddThemeFontSizeOverride("font_size", 10);
+            slotLbl.AddThemeFontSizeOverride("font_size", 9);
             panel.AddChild(slotLbl);
             _slotLabels[i] = slotLbl;
         }
 
+        var lobbyBox = new ColorRect
+        {
+            Color = new Color("142130"),
+            Position = new Vector2(390f, 95f),
+            Size = new Vector2(210f, 90f)
+        };
+        panel.AddChild(lobbyBox);
+
         _lobbyInfoLabel = new Label
         {
-            Text = "THÔNG TIN PHÒNG LAN",
-            Position = new Vector2(390f, 95f),
-            Size = new Vector2(220f, 95f),
+            Text = "THÔNG TIN PHÒNG\nIP LAN: Đang dò...\nCổng: 7777\nTrạng thái: Khởi tạo...",
+            Position = new Vector2(400f, 102f),
             Modulate = new Color("a8dadc")
         };
         _lobbyInfoLabel.AddThemeFontSizeOverride("font_size", 9);
         panel.AddChild(_lobbyInfoLabel);
 
-        var btnGender = CreateMenuButton(panel, "ĐỔI NHÂN VẬT: NAM / NỮ", new Vector2(42f, 254f), new Vector2(160f, 30f), false);
-        btnGender.Pressed += () => NetworkManager.Instance.RequestToggleLocalGender();
-
-        _btnComboToggle = CreateMenuButton(panel, "MAP: NGẪU NHIÊN (A/B)", new Vector2(210f, 254f), new Vector2(162f, 30f), false);
+        _btnComboToggle = CreateMenuButton(panel, "MAP: NGẪU NHIÊN", new Vector2(42f, 252f), new Vector2(330f, 30f), false);
         _btnComboToggle.Pressed += () =>
         {
             GameSession.Instance.SelectedCombination = GameSession.Instance.SelectedCombination switch
@@ -268,11 +331,27 @@ public partial class MainMenuUI : CanvasLayer
         _btnStartLanMatch = CreateMenuButton(panel, "BẮT ĐẦU VÁN ĐẤU", new Vector2(390f, 240f), new Vector2(210f, 44f), true);
         _btnStartLanMatch.Pressed += () => HostStartLanMatchRequested?.Invoke();
 
-        var btnLeave = CreateMenuButton(panel, "← RỜI PHÒNG", new Vector2(42f, 294f), new Vector2(160f, 28f), false);
+        var btnLeave = CreateMenuButton(panel, "← RỜI PHÒNG", new Vector2(42f, 294f), new Vector2(140f, 28f), false);
         btnLeave.Pressed += () =>
         {
-            NetworkManager.Instance.CloseLanSession();
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
+            {
+                NetworkManager.Instance.CloseAndResetHostRoom();
+            }
+            else
+            {
+                NetworkManager.Instance?.CloseLanSession();
+            }
             ShowScreen(_panelMultiplayerChoice);
+        };
+
+        var btnReset = CreateMenuButton(panel, "LÀM MỚI PHÒNG", new Vector2(190f, 294f), new Vector2(150f, 28f), false);
+        btnReset.Pressed += () =>
+        {
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsHost)
+            {
+                NetworkManager.Instance.ResetHostRoom();
+            }
         };
 
         return panel;
@@ -302,8 +381,8 @@ public partial class MainMenuUI : CanvasLayer
 
         _ipInput = new LineEdit
         {
-            Text = "127.0.0.1",
-            PlaceholderText = "VD: 192.168.1.10",
+            Text = "",
+            PlaceholderText = "Format: 100.xxx.xxx.xxx (VD: 100.117.237.74)",
             Position = new Vector2(140f, 132f),
             Size = new Vector2(340f, 28f)
         };
@@ -330,12 +409,19 @@ public partial class MainMenuUI : CanvasLayer
         var btnConnect = CreateMenuButton(panel, "KẾT NỐI", new Vector2(140f, 240f), new Vector2(160f, 38f), true);
         btnConnect.Pressed += () =>
         {
+            string targetIp = _ipInput.Text.Trim();
+            if (string.IsNullOrWhiteSpace(targetIp))
+            {
+                _ipInput.PlaceholderText = "Vui lòng nhập IP phòng (VD: 100.117.237.74)!";
+                return;
+            }
+
             int port = NetworkManager.DefaultLanPort;
             if (!string.IsNullOrWhiteSpace(_portInput.Text) && int.TryParse(_portInput.Text.Trim(), out int parsed))
             {
                 port = parsed;
             }
-            if (NetworkManager.Instance.JoinLanRoom(_ipInput.Text, port))
+            if (NetworkManager.Instance != null && NetworkManager.Instance.JoinLanRoom(targetIp, port))
             {
                 ShowScreen(_panelLanLobby);
             }
@@ -449,7 +535,7 @@ public partial class MainMenuUI : CanvasLayer
         {
             Color = new Color("18293b"),
             Position = new Vector2(42f, 14f),
-            Size = new Vector2(145f, 20f)
+            Size = new Vector2(230f, 20f)
         };
         parent.AddChild(rect);
 

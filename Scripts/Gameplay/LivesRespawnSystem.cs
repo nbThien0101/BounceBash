@@ -164,6 +164,10 @@ public static class LivesRespawnSystem
         if (player.RemainingLives <= 0)
         {
             player.IsEliminated = true;
+            player.Velocity = Vector2.Zero;
+            player.Visible = false;
+            // Place eliminated player safely below view to prevent collisions
+            player.GlobalPosition = new Vector2(player.GlobalPosition.X, camera.BottomEdgeY + 2000.0f);
             return;
         }
 

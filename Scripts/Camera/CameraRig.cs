@@ -11,7 +11,7 @@ namespace BounceBash.Camera;
 /// - Singleplayer: Continuous upward scroll at SinglePlayerCameraScrollSpeed (never stops waiting),
 ///   clamped at the Temple roof so GoalZone never disappears off-screen.
 /// - PvP (2-4 players): Shared camera following the highest non-eliminated player,
-///   monotonic upward only (only moves up or holds position; never scrolls down).
+///   monotonic upward only while climbing, with smart recovery descent if the previous leader is eliminated.
 /// </summary>
 public partial class CameraRig : Camera2D
 {
@@ -74,9 +74,18 @@ public partial class CameraRig : Camera2D
             if (leaderY < float.MaxValue)
             {
                 float desiredCenterY = leaderY - 24.0f;
-                // Monotonic upward rule (GDD 1.2.4 & T06): camera only moves up (smaller Y) or stays still
-                if (desiredCenterY < _highestCenterY)
+                // If the previous leader was eliminated and all remaining survivors are below current camera view,
+                // smoothly descend the camera to the new surviving leader so remaining players aren't killed by an empty camera.
+                if (leaderY > BottomEdgeY - 48.0f)
                 {
+                    _highestCenterY = Mathf.Lerp(
+                        _highestCenterY,
+                        desiredCenterY,
+                        Mathf.Clamp(dt * Tuning.PvPCameraSmoothSpeed * 2.5f, 0f, 1f));
+                }
+                else if (desiredCenterY < _highestCenterY)
+                {
+                    // Monotonic upward rule (GDD 1.2.4 & T06): camera only moves up (smaller Y) or stays still
                     float smoothed = Mathf.Lerp(
                         _highestCenterY,
                         desiredCenterY,
@@ -99,12 +108,11 @@ public partial class CameraRig : Camera2D
 
     public override void _Draw()
     {
-        // Draw subtle danger-zone indicator along the bottom edge of the camera (where falling out costs 1 life)
-        float halfW = ViewportWidth * 0.5f;
-        float halfH = ViewportHeight * 0.5f;
-        DrawRect(
-            new Rect2(-halfW, halfH - 4f, ViewportWidth, 4f),
-            new Color(0.95f, 0.22f, 0.28f, 0.65f),
-            true);
+        // Debug safe margin indicator line in editor
+        if (OS.IsDebugBuild())
+        {
+            float safeY = ViewportHeight * 0.5f - Tuning.RespawnSafeMarginBottom;
+            DrawLine(new Vector2(-ViewportWidth * 0.5f, safeY), new Vector2(ViewportWidth * 0.5f, safeY), new Color(1f, 0.4f, 0.2f, 0.35f), 1.0f);
+        }
     }
 }

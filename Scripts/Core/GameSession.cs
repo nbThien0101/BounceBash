@@ -82,6 +82,23 @@ public partial class GameSession : Node
         }
     }
 
+    public void SetupSlotsForPvE(CharacterGender playerGender = CharacterGender.Male, CharacterGender botGender = CharacterGender.Female)
+    {
+        Slots.Clear();
+        for (int i = 0; i < 4; i++)
+        {
+            Slots.Add(new PlayerSlotInfo
+            {
+                SlotIndex = i,
+                PeerId = i == 0 ? 1 : (i == 1 ? 99 : 0),
+                DisplayName = i == 0 ? "P1" : (i == 1 ? "BOT" : $"P{i + 1}"),
+                TagColor = PlayerPalette[i],
+                Gender = i == 0 ? playerGender : botGender,
+                IsOccupied = i < 2
+            });
+        }
+    }
+
     public void SetupSlotsForLocalTwoPlayer(CharacterGender p1Gender = CharacterGender.Male, CharacterGender p2Gender = CharacterGender.Female)
     {
         Slots.Clear();

@@ -1,16 +1,12 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using BounceBash.Core;
 using Godot;
 
 namespace BounceBash.Net;
 
 /// <summary>
-/// Host-Authoritative LAN Session & State Sync Manager using Godot's ENetMultiplayerPeer
-/// (GDD Section 1.6.3 & 1.7.3 - replacing Unity Netcode for GameObjects + Unity Transport).
+/// Host-Authoritative LAN Networking controller via ENetMultiplayerPeer (GDD Section 1.7.1 - 1.7.3 & Figure 1.7-01).
+/// Features:
 /// - Default Port: 7777 (configurable when creating or joining a LAN room)
 /// - Host automatically occupies P1 (Red); Clients occupy P2-P4.
 /// - Client sends input to Host; Host simulates physics, collisions, camera, respawn, items, and GoalZone,
@@ -18,10 +14,9 @@ namespace BounceBash.Net;
 /// </summary>
 public partial class NetworkManager : Node
 {
-    public static NetworkManager Instance { get; private set; } = null!;
-
     public const int DefaultLanPort = 7777;
-    public const int MaxPlayers = 4;
+
+    public static NetworkManager Instance { get; private set; } = null!;
 
     public bool IsLanActive { get; private set; }
     public bool IsHost { get; private set; } = true;
@@ -29,9 +24,12 @@ public partial class NetworkManager : Node
     public string StatusMessage { get; private set; } = "Chưa kết nối LAN";
 
     public event Action? LobbyUpdated;
+    public event Action? HostResetOccurred;
     public event Action<int, int, int>? MatchStartRequested;
     public event Action<int, float, bool, bool>? ClientInputReceived;
     public event Action<Godot.Collections.Dictionary>? AuthoritativeStateReceived;
+    public event Action<string, string, Color>? MatchEndReceived;
+    public event Action<string>? EliminationNoticeReceived;
 
     private ENetMultiplayerPeer? _enetPeer;
 
@@ -43,37 +41,99 @@ public partial class NetworkManager : Node
         Multiplayer.ConnectedToServer += OnConnectedToServer;
         Multiplayer.ConnectionFailed += OnConnectionFailed;
         Multiplayer.ServerDisconnected += OnServerDisconnected;
+
+        // Auto-load configured port from multiplayer_config.json if present
+        ConfiguredPort = LoadPortFromConfigFile();
+        ActivePort = ConfiguredPort;
+    }
+
+    public override void _ExitTree()
+    {
+        CloseLanSession();
+        Multiplayer.PeerConnected -= OnPeerConnected;
+        Multiplayer.PeerDisconnected -= OnPeerDisconnected;
+        Multiplayer.ConnectedToServer -= OnConnectedToServer;
+        Multiplayer.ConnectionFailed -= OnConnectionFailed;
+        Multiplayer.ServerDisconnected -= OnServerDisconnected;
+    }
+
+    public int ConfiguredPort { get; private set; } = DefaultLanPort;
+
+    private static int LoadPortFromConfigFile()
+    {
+        string configPath = "res://multiplayer_config.json";
+        if (!FileAccess.FileExists(configPath))
+        {
+            return DefaultLanPort;
+        }
+
+        try
+        {
+            using var file = FileAccess.Open(configPath, FileAccess.ModeFlags.Read);
+            string jsonString = file.GetAsText();
+            var json = Json.ParseString(jsonString);
+            if (json.VariantType == Variant.Type.Dictionary)
+            {
+                var dict = json.AsGodotDictionary();
+                if (dict.TryGetValue("lan_port", out var portVal))
+                {
+                    int parsed = portVal.AsInt32();
+                    if (parsed is > 1024 and <= 65535)
+                    {
+                        return parsed;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[NetworkManager] Failed to load multiplayer_config.json: {ex.Message}");
+        }
+
+        return DefaultLanPort;
     }
 
     public string GetLocalLanIp()
     {
+        string fallback = "127.0.0.1";
         try
         {
-            foreach (var ip in Dns.GetHostEntry(Dns.GetHostName()).AddressList)
+            foreach (string ip in IP.GetLocalAddresses())
             {
-                if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                if (ip.Contains(':'))
                 {
-                    return ip.ToString();
+                    continue; // Skip IPv6
                 }
+                if (ip.StartsWith("127."))
+                {
+                    continue; // Skip Loopback
+                }
+                if (ip.StartsWith("169.254."))
+                {
+                    continue; // Skip Link-Local
+                }
+                return ip;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Fallback to localhost if offline
+            GD.PrintErr($"[NetworkManager] Error querying local IP: {ex.Message}");
         }
-        return "127.0.0.1";
+        return fallback;
     }
 
     public bool HostLanRoom(int port = DefaultLanPort)
     {
         CloseLanSession();
+        ConfiguredPort = port;
+        ActivePort = port;
 
-        ActivePort = port <= 0 ? DefaultLanPort : port;
         _enetPeer = new ENetMultiplayerPeer();
-        Error err = _enetPeer.CreateServer(ActivePort, MaxPlayers - 1);
+        var err = _enetPeer.CreateServer(port, 4); // Max 4 players (GDD 1.7.1)
         if (err != Error.Ok)
         {
-            StatusMessage = $"Lỗi tạo phòng LAN (Cổng {ActivePort}): {err}";
+            StatusMessage = $"Không thể mở phòng tại cổng {port} (Lỗi: {err})";
+            GD.PrintErr($"[NetworkManager] CreateServer error: {err}");
             _enetPeer = null;
             return false;
         }
@@ -91,18 +151,18 @@ public partial class NetworkManager : Node
         return true;
     }
 
-    public bool JoinLanRoom(string ipAddress, int port = DefaultLanPort)
+    public bool JoinLanRoom(string hostAddress, int port = DefaultLanPort)
     {
         CloseLanSession();
-
-        string cleanIp = string.IsNullOrWhiteSpace(ipAddress) ? "127.0.0.1" : ipAddress.Trim();
-        ActivePort = port <= 0 ? DefaultLanPort : port;
+        ConfiguredPort = port;
+        ActivePort = port;
 
         _enetPeer = new ENetMultiplayerPeer();
-        Error err = _enetPeer.CreateClient(cleanIp, ActivePort);
+        var err = _enetPeer.CreateClient(hostAddress, port);
         if (err != Error.Ok)
         {
-            StatusMessage = $"Không thể kết nối tới {cleanIp}:{ActivePort} ({err})";
+            StatusMessage = $"Không thể kết nối đến {hostAddress}:{port} (Lỗi: {err})";
+            GD.PrintErr($"[NetworkManager] CreateClient error: {err}");
             _enetPeer = null;
             return false;
         }
@@ -110,7 +170,8 @@ public partial class NetworkManager : Node
         Multiplayer.MultiplayerPeer = _enetPeer;
         IsLanActive = true;
         IsHost = false;
-        StatusMessage = $"Đang kết nối tới {cleanIp}:{ActivePort}...";
+        StatusMessage = $"Đang kết nối đến {hostAddress}:{port}...";
+
         LobbyUpdated?.Invoke();
         return true;
     }
@@ -120,74 +181,122 @@ public partial class NetworkManager : Node
         if (_enetPeer != null)
         {
             _enetPeer.Close();
+            _enetPeer.Dispose();
             _enetPeer = null;
         }
         Multiplayer.MultiplayerPeer = null;
         IsLanActive = false;
         IsHost = true;
-        StatusMessage = "Đã ngắt kết nối LAN";
+        StatusMessage = "Chưa kết nối LAN";
     }
 
-    private void OnPeerConnected(long id)
+    public void ResetHostRoom()
     {
         if (!IsHost)
         {
             return;
         }
 
-        // Assign the first available slot (P2..P4) to the newly connected client
-        foreach (var slot in GameSession.Instance.Slots)
+        CloseLanSession();
+
+        var defaultGender = GameSession.Instance.Slots.Count > 0 ? GameSession.Instance.Slots[0].Gender : CharacterGender.Male;
+        GameSession.Instance.ResetSlotsForSinglePlayer(defaultGender);
+
+        HostLanRoom(ConfiguredPort);
+
+        HostResetOccurred?.Invoke();
+        LobbyUpdated?.Invoke();
+    }
+
+    public void CloseAndResetHostRoom()
+    {
+        if (IsLanActive && IsHost)
         {
-            if (!slot.IsOccupied)
+            Rpc(MethodName.RpcNotifyHostReset);
+        }
+
+        CloseLanSession();
+
+        var defaultGender = GameSession.Instance.Slots.Count > 0 ? GameSession.Instance.Slots[0].Gender : CharacterGender.Male;
+        GameSession.Instance.ResetSlotsForSinglePlayer(defaultGender);
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = false, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+    private void RpcNotifyHostReset()
+    {
+        CloseLanSession();
+        HostResetOccurred?.Invoke();
+    }
+
+    private void OnPeerConnected(long peerIdLong)
+    {
+        int peerId = (int)peerIdLong;
+        if (!IsHost)
+        {
+            return;
+        }
+
+        int assignedSlot = -1;
+        for (int i = 1; i < 4; i++)
+        {
+            if (!GameSession.Instance.Slots[i].IsOccupied)
             {
-                slot.IsOccupied = true;
-                slot.PeerId = (int)id;
+                GameSession.Instance.Slots[i].IsOccupied = true;
+                GameSession.Instance.Slots[i].PeerId = peerId;
+                assignedSlot = i;
                 break;
             }
         }
 
-        StatusMessage = $"Người chơi mới ({id}) đã vào phòng.";
-        BroadcastLobbySlots();
+        if (assignedSlot != -1)
+        {
+            SyncLobbySlotsToAllClients();
+        }
+        else
+        {
+            _enetPeer?.DisconnectPeer(peerId);
+        }
     }
 
-    private void OnPeerDisconnected(long id)
+    private void OnPeerDisconnected(long peerIdLong)
     {
+        int peerId = (int)peerIdLong;
         if (!IsHost)
         {
             return;
         }
 
-        foreach (var slot in GameSession.Instance.Slots)
+        for (int i = 1; i < 4; i++)
         {
-            if (slot.IsOccupied && slot.PeerId == (int)id && slot.SlotIndex > 0)
+            if (GameSession.Instance.Slots[i].PeerId == peerId)
             {
-                slot.IsOccupied = false;
-                slot.PeerId = 0;
+                GameSession.Instance.Slots[i].IsOccupied = false;
+                GameSession.Instance.Slots[i].PeerId = 0;
+                break;
             }
         }
 
-        StatusMessage = $"Người chơi ({id}) đã rời phòng.";
-        BroadcastLobbySlots();
+        SyncLobbySlotsToAllClients();
     }
 
     private void OnConnectedToServer()
     {
-        StatusMessage = "Đã kết nối vào Sảnh Chờ LAN!";
+        StatusMessage = $"Đã vào phòng LAN thành công! Cổng: {ActivePort}";
         LobbyUpdated?.Invoke();
     }
 
     private void OnConnectionFailed()
     {
-        StatusMessage = "Kết nối LAN thất bại. Hãy kiểm tra IP và Cổng.";
+        StatusMessage = "Kết nối đến phòng LAN thất bại! Vui lòng kiểm tra IP và tường lửa.";
         CloseLanSession();
         LobbyUpdated?.Invoke();
     }
 
     private void OnServerDisconnected()
     {
-        StatusMessage = "Chủ phòng đã đóng phòng LAN.";
+        StatusMessage = "Chủ phòng đã ngắt kết nối hoặc phòng đã bị đóng.";
         CloseLanSession();
-        LobbyUpdated?.Invoke();
+        HostResetOccurred?.Invoke();
     }
 
     public void RequestToggleLocalGender()
@@ -198,7 +307,7 @@ public partial class NetworkManager : Node
             ToggleGenderForPeer(myPeerId);
             if (IsLanActive)
             {
-                BroadcastLobbySlots();
+                SyncLobbySlotsToAllClients();
             }
             else
             {
@@ -219,19 +328,19 @@ public partial class NetworkManager : Node
             return;
         }
         ToggleGenderForPeer(peerId);
-        BroadcastLobbySlots();
+        SyncLobbySlotsToAllClients();
     }
 
     private static void ToggleGenderForPeer(int peerId)
     {
-        var slot = GameSession.Instance.Slots.FirstOrDefault(s => s.IsOccupied && s.PeerId == peerId);
+        var slot = GameSession.Instance.Slots.Find(s => s.PeerId == peerId && s.IsOccupied);
         if (slot != null)
         {
             slot.Gender = slot.Gender == CharacterGender.Male ? CharacterGender.Female : CharacterGender.Male;
         }
     }
 
-    public void BroadcastLobbySlots()
+    private void SyncLobbySlotsToAllClients()
     {
         if (!IsHost)
         {
@@ -289,6 +398,45 @@ public partial class NetworkManager : Node
     private void RpcStartMatch(int seed, int modeInt, int combinationInt)
     {
         MatchStartRequested?.Invoke(seed, modeInt, combinationInt);
+    }
+
+    public void HostBroadcastMatchEnd(string title, string detail, Color titleColor)
+    {
+        if (!IsHost)
+        {
+            return;
+        }
+
+        if (IsLanActive)
+        {
+            Rpc(MethodName.RpcMatchEnd, title, detail, titleColor.ToHtml());
+        }
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = false, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+    private void RpcMatchEnd(string title, string detail, string colorHtml)
+    {
+        Color titleColor = string.IsNullOrEmpty(colorHtml) ? Colors.White : new Color(colorHtml);
+        MatchEndReceived?.Invoke(title, detail, titleColor);
+    }
+
+    public void HostBroadcastEliminationNotice(string notice)
+    {
+        if (!IsHost)
+        {
+            return;
+        }
+
+        if (IsLanActive)
+        {
+            Rpc(MethodName.RpcEliminationNotice, notice);
+        }
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = false, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+    private void RpcEliminationNotice(string notice)
+    {
+        EliminationNoticeReceived?.Invoke(notice);
     }
 
     public void SendClientInputToHost(float moveInput, bool jumpHeld, bool jumpReleased)

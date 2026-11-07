@@ -13,7 +13,7 @@ config_version=5
 config/name="Bounce Bash"
 config/description="The Adventure to the Forbidden Temple - 2D Precision Platformer Arcade/Competitive"
 run/main_scene="res://Scenes/Main.tscn"
-config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://Assets/Sprites/Props/elixir.png"
 
 [autoload]
@@ -28,7 +28,6 @@ window/size/viewport_height=360
 window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="canvas_items"
-window/stretch/aspect="keep"
 window/stretch/scale_mode="integer"
 
 [dotnet]
@@ -37,7 +36,6 @@ project/assembly_name="BounceBash"
 
 [physics]
 
-common/physics_ticks_per_second=60
 2d/default_gravity=925.7
 
 [rendering]

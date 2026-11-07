@@ -6,13 +6,15 @@ using Godot;
 namespace BounceBash.Player;
 
 /// <summary>
-/// Core player controller implementing GDD Section 1.2.1, 1.2.2, 1.2.3, 1.3.1, 1.5.2-1.5.4, 1.6.2, and Tests T01-T08:
+/// Core player controller implementing GDD v0.9.5 Section 1.2.1, 1.2.2, 1.2.3, 1.3.1, 1.5.2-1.5.4, 1.6.2, and Tests T01-T08:
 /// - GroundedIdle / GroundedMove / Charging / Airborne / Landing state machine
-/// - Charge-and-release jumping (A/D changes direction during charge without resetting force)
+/// - Cyclic (Ping-Pong Min <-> Max) charge-and-release jumping (GDD v0.9.5 Slide 9 & 20)
+/// - Releasing at either rising or falling phase uses the exact charge ratio at that moment
 /// - No air control or double jump while Airborne
 /// - Visual facing decoupled from physics; in air only flips when |vx| > FacingVelocityEpsilon
 /// - Identical hitbox (14x24) and foot baseline anchor for Male and Female Explorers
 /// - Kinetic Nullifier (Buff) & Direction Lock (Debuff) support
+/// - Supports both Human input and Bot AI Controller driving (GDD v0.9.5 Slide 22)
 /// </summary>
 public partial class PlayerController : CharacterBody2D
 {
@@ -22,11 +24,13 @@ public partial class PlayerController : CharacterBody2D
     public Color TagColor { get; set; } = Colors.Red;
     public CharacterGender Gender { get; set; } = CharacterGender.Male;
     public bool IsLocalSecondaryKeyboard { get; set; }
+    public bool IsBot { get; set; }
 
     public PlayerState CurrentState { get; private set; } = PlayerState.GroundedIdle;
     public int FacingDirection { get; private set; } = 1; // -1 = West/Left, +1 = East/Right
     public int IntendedJumpDirection { get; private set; } // -1 = Left, 0 = Straight, +1 = Right
     public float CurrentChargeTime { get; private set; }
+    public bool IsChargeAscending { get; private set; } = true;
     public float ChargeRatio => Tuning != null && Tuning.MaxChargeTime > 0f
         ? Mathf.Clamp(CurrentChargeTime / Tuning.MaxChargeTime, 0f, 1f)
         : 0f;
@@ -64,6 +68,7 @@ public partial class PlayerController : CharacterBody2D
     private TuningConfig Tuning => GameSession.Instance.Tuning;
     private float _landingTimer;
     private float _bounceSfxCooldown;
+    private float _rawChargeElapsed;
 
     private Sprite2D _sprite = null!;
     private CollisionShape2D _collisionShape = null!;
@@ -103,7 +108,8 @@ public partial class PlayerController : CharacterBody2D
         _sprite = new Sprite2D
         {
             TextureFilter = CanvasItem.TextureFilterEnum.Nearest,
-            Position = new Vector2(0f, -15f)
+            Centered = false,
+            Offset = new Vector2(-16f, -30f)
         };
         AddChild(_sprite);
 
@@ -135,6 +141,11 @@ public partial class PlayerController : CharacterBody2D
 
     public void SampleLocalInput()
     {
+        if (IsBot)
+        {
+            return;
+        }
+
         bool left;
         bool right;
         bool jumpHeld;
@@ -244,6 +255,8 @@ public partial class PlayerController : CharacterBody2D
                     // Enter Charging immediately and stop walking (GDD 1.2.1 & T02)
                     CurrentState = PlayerState.Charging;
                     CurrentChargeTime = 0f;
+                    _rawChargeElapsed = 0f;
+                    IsChargeAscending = true;
                     Velocity = Vector2.Zero;
                     IntendedJumpDirection = moveDir;
                     if (moveDir != 0)
@@ -273,6 +286,8 @@ public partial class PlayerController : CharacterBody2D
                 if (!CheckIsGrounded())
                 {
                     CurrentChargeTime = 0f;
+                    _rawChargeElapsed = 0f;
+                    IsChargeAscending = true;
                     CurrentState = PlayerState.Airborne;
                     break;
                 }
@@ -284,8 +299,34 @@ public partial class PlayerController : CharacterBody2D
                     FacingDirection = moveDir;
                 }
 
-                // Charge increases to MaxChargeTime and holds (does NOT auto-release or cycle down)
-                CurrentChargeTime = Mathf.Min(Tuning.MaxChargeTime, CurrentChargeTime + dt);
+                // GDD v0.9.5 Section 1.2.1 & Slide 09, 20: Tụ lực tuần hoàn: Min <-> Max
+                // Giữ: Min -> Max -> Min -> Max... Nhả: dùng đúng lực tại thời điểm đó (pha tăng hoặc giảm đều hợp lệ)
+                float maxT = Tuning.MaxChargeTime > 0.001f ? Tuning.MaxChargeTime : 0.60f;
+                _rawChargeElapsed += dt;
+                float cycle = 2f * maxT;
+                float phase = _rawChargeElapsed % cycle;
+                bool wasAscending = IsChargeAscending;
+
+                if (phase <= maxT)
+                {
+                    CurrentChargeTime = phase;
+                    IsChargeAscending = true;
+                }
+                else
+                {
+                    CurrentChargeTime = cycle - phase;
+                    IsChargeAscending = false;
+                }
+
+                // Audio feedback as game feedback (GDD v0.9.5 Slide 20: charge_up -> peak -> charge_down -> min)
+                if (wasAscending && !IsChargeAscending)
+                {
+                    GameSession.Instance.PlaySfx("sfx_charge", 1.4f, 0.4f);
+                }
+                else if (!wasAscending && IsChargeAscending)
+                {
+                    GameSession.Instance.PlaySfx("sfx_charge", 0.85f, 0.35f);
+                }
 
                 if (NetJumpReleasedBuffer || !NetJumpHeld)
                 {
@@ -336,6 +377,8 @@ public partial class PlayerController : CharacterBody2D
 
         Velocity = new Vector2(vx, vy);
         CurrentChargeTime = 0f;
+        _rawChargeElapsed = 0f;
+        IsChargeAscending = true;
         CurrentState = PlayerState.Airborne;
         GameSession.Instance.PlaySfx("sfx_jump", Mathf.Lerp(0.9f, 1.25f, ratio), 0.75f);
     }
@@ -353,40 +396,32 @@ public partial class PlayerController : CharacterBody2D
                 break;
             }
 
-            remainingMotion = collision.GetRemainder();
             Vector2 normal = collision.GetNormal();
-            GodotObject? collider = collision.GetCollider();
+            var colliderNode = collision.GetCollider() as Node;
 
-            if (collider is PlayerController otherPlayer)
+            // 1. Check for Player vs Player collision (GDD 1.3.1 & CollisionResolver)
+            if (colliderNode is PlayerController otherPlayer && !otherPlayer.IsEliminated)
             {
-                bool resolved = CollisionResolver.TryResolvePlayerPair(this, otherPlayer, normal, Tuning);
-                if (resolved && _bounceSfxCooldown <= 0f)
-                {
-                    _bounceSfxCooldown = 0.12f;
-                    GameSession.Instance.PlaySfx("sfx_bounce", 1.1f, 0.85f);
-                }
-
-                // Update visual facing after bounce if |vx| > epsilon (GDD 1.3.1 & T03)
-                UpdateAirborneFacingFromVelocity();
-                remainingMotion = remainingMotion.Bounce(normal) * 0.5f;
+                CollisionResolver.TryResolvePlayerPair(this, otherPlayer, normal, Tuning);
+                remainingMotion = remainingMotion.Slide(normal);
                 continue;
             }
 
+            // 2. Check for Platform vs Wall / Ceiling collision
             if (CurrentState == PlayerState.Airborne)
             {
-                bool isBounceWall = collider is Node node && node.IsInGroup("BounceWall");
+                bool isBounceWall = colliderNode != null && colliderNode.IsInGroup("BounceWall");
                 Vector2 newVel = CollisionResolver.ResolveTerrainBounce(
                     Velocity,
                     normal,
                     isBounceWall,
                     Tuning,
-                    out bool landedOnGround,
+                    out bool isLanding,
                     out bool bouncedOffWallOrCeiling);
 
-                Velocity = newVel;
-
-                if (landedOnGround)
+                if (isLanding)
                 {
+                    Velocity = Vector2.Zero;
                     CurrentState = PlayerState.Landing;
                     _landingTimer = Tuning.LandingRecoveryTime;
                     remainingMotion = Vector2.Zero;
@@ -395,6 +430,7 @@ public partial class PlayerController : CharacterBody2D
 
                 if (bouncedOffWallOrCeiling)
                 {
+                    Velocity = newVel;
                     if (_bounceSfxCooldown <= 0f)
                     {
                         _bounceSfxCooldown = 0.10f;
@@ -432,6 +468,8 @@ public partial class PlayerController : CharacterBody2D
         if (Velocity.Y < -20f || !CheckIsGrounded())
         {
             CurrentChargeTime = 0f;
+            _rawChargeElapsed = 0f;
+            IsChargeAscending = true;
             CurrentState = PlayerState.Airborne;
         }
 
@@ -467,6 +505,8 @@ public partial class PlayerController : CharacterBody2D
         GlobalPosition = targetPoint;
         Velocity = Vector2.Zero;
         CurrentChargeTime = 0f;
+        _rawChargeElapsed = 0f;
+        IsChargeAscending = true;
         CurrentState = PlayerState.GroundedIdle;
         RequireJumpReleaseAfterRespawn = true;
         NetJumpReleasedBuffer = false;
@@ -531,7 +571,7 @@ public partial class PlayerController : CharacterBody2D
                 TagColor);
         }
 
-        // 2. Draw Charge Bar + Intended Direction Arrow when Charging
+        // 2. Draw Charge Bar + Cyclic Indicator Arrow when Charging (GDD v0.9.5 Slide 9)
         if (CurrentState == PlayerState.Charging)
         {
             float ratio = ChargeRatio;
@@ -539,6 +579,14 @@ public partial class PlayerController : CharacterBody2D
             DrawRect(new Rect2(barPos, new Vector2(24f, 4f)), new Color(0f, 0f, 0f, 0.85f), true);
             Color chargeCol = ratio >= 0.98f ? new Color("ff595e") : new Color("ffca3a").Lerp(new Color("ff595e"), ratio);
             DrawRect(new Rect2(barPos + new Vector2(1f, 1f), new Vector2(22f * ratio, 2f)), chargeCol, true);
+
+            // Cyclic indicator arrow (GDD v0.9.5 Slide 9: Min <-> Max oscillating)
+            string cycleStr = IsChargeAscending ? "▲" : "▼";
+            Color cycleCol = IsChargeAscending ? new Color("8ecae6") : new Color("ffb703");
+            if (ThemeDB.FallbackFont != null)
+            {
+                DrawString(ThemeDB.FallbackFont, new Vector2(14f, -27f), cycleStr, HorizontalAlignment.Left, -1f, 7, cycleCol);
+            }
 
             // Optional Jump King Parabola trajectory preview (from reference [4])
             if (GameSession.Instance.ShowTrajectoryPreview)
